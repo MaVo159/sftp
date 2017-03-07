@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	sftpServerWorkerCount = 8
+	sftpServerWorkerCount = 1
 )
 
 // Server is an SSH File Transfer Protocol (sftp) server.
@@ -204,6 +204,7 @@ func (svr *Server) sftpServerWorker() error {
 		}
 
 		if err := handlePacket(svr, pkt); err != nil {
+			debug("handlePacket err: %s", err)
 			return err
 		}
 	}
@@ -216,6 +217,7 @@ func handlePacket(s *Server, p interface{}) error {
 		return s.sendPacket(sshFxVersionPacket{sftpProtocolVersion, nil})
 	case *sshFxpStatPacket:
 		// stat the requested file
+		debug("stat: %s", p.Path)
 		info, err := os.Stat(p.Path)
 		if err != nil {
 			return s.sendError(p, err)
@@ -226,6 +228,7 @@ func handlePacket(s *Server, p interface{}) error {
 		})
 	case *sshFxpLstatPacket:
 		// stat the requested file
+		debug("lstat: %s", p.Path)
 		info, err := os.Lstat(p.Path)
 		if err != nil {
 			return s.sendError(p, err)
@@ -235,6 +238,7 @@ func handlePacket(s *Server, p interface{}) error {
 			info: info,
 		})
 	case *sshFxpFstatPacket:
+		debug("fstat: %s", p.Handle)
 		f, ok := s.getHandle(p.Handle)
 		if !ok {
 			return s.sendError(p, syscall.EBADF)
@@ -251,23 +255,30 @@ func handlePacket(s *Server, p interface{}) error {
 		})
 	case *sshFxpMkdirPacket:
 		// TODO FIXME: ignore flags field
+		debug("mkdir: %s", p.Path)
 		err := os.Mkdir(p.Path, 0755)
 		return s.sendError(p, err)
 	case *sshFxpRmdirPacket:
+		debug("rmdir: %s", p.Path)
 		err := os.Remove(p.Path)
 		return s.sendError(p, err)
 	case *sshFxpRemovePacket:
+		debug("remove: %s", p.Filename)
 		err := os.Remove(p.Filename)
 		return s.sendError(p, err)
 	case *sshFxpRenamePacket:
+		debug("rename: %s %s", p.Oldpath, p.Newpath)
 		err := os.Rename(p.Oldpath, p.Newpath)
 		return s.sendError(p, err)
 	case *sshFxpSymlinkPacket:
+		debug("symlink: %s %s", p.Targetpath, p.Linkpath)
 		err := os.Symlink(p.Targetpath, p.Linkpath)
 		return s.sendError(p, err)
 	case *sshFxpClosePacket:
+		debug("close: %s", p.Handle)
 		return s.sendError(p, s.closeHandle(p.Handle))
 	case *sshFxpReadlinkPacket:
+		debug("readlink: %s", p.Path)
 		f, err := os.Readlink(p.Path)
 		if err != nil {
 			return s.sendError(p, err)
@@ -283,6 +294,7 @@ func handlePacket(s *Server, p interface{}) error {
 		})
 
 	case *sshFxpRealpathPacket:
+		debug("realpath: %s", p.Path)
 		f, err := filepath.Abs(p.Path)
 		if err != nil {
 			return s.sendError(p, err)
@@ -298,12 +310,14 @@ func handlePacket(s *Server, p interface{}) error {
 			}},
 		})
 	case *sshFxpOpendirPacket:
+		debug("opendir: %s", p.Path)
 		return sshFxpOpenPacket{
 			ID:     p.ID,
 			Path:   p.Path,
 			Pflags: ssh_FXF_READ,
 		}.respond(s)
 	case *sshFxpReadPacket:
+		// debug("read: %s", p.Handle)
 		f, ok := s.getHandle(p.Handle)
 		if !ok {
 			return s.sendError(p, syscall.EBADF)
@@ -320,6 +334,7 @@ func handlePacket(s *Server, p interface{}) error {
 			Data:   data[:n],
 		})
 	case *sshFxpWritePacket:
+		// debug("write: %s", p.Handle)
 		f, ok := s.getHandle(p.Handle)
 		if !ok {
 			return s.sendError(p, syscall.EBADF)
@@ -344,6 +359,7 @@ func (svr *Server) Serve() error {
 		go func() {
 			defer wg.Done()
 			if err := svr.sftpServerWorker(); err != nil {
+				debug("worker died: %s", err)
 				svr.conn.Close() // shuts down recvPacket
 			}
 		}()
@@ -431,6 +447,7 @@ func (p sshFxpOpenPacket) respond(svr *Server) error {
 		osFlags |= os.O_EXCL
 	}
 
+	debug("openfile name: %s", p.Path)
 	f, err := os.OpenFile(p.Path, osFlags, 0644)
 	if err != nil {
 		return svr.sendError(p, err)
@@ -447,6 +464,7 @@ func (p sshFxpReaddirPacket) respond(svr *Server) error {
 	}
 
 	dirname := f.Name()
+	debug("readdir name: %s", dirname)
 	dirents, err := f.Readdir(128)
 	if err != nil {
 		return svr.sendError(p, err)
@@ -468,7 +486,7 @@ func (p sshFxpSetstatPacket) respond(svr *Server) error {
 	b := p.Attrs.([]byte)
 	var err error
 
-	debug("setstat name \"%s\"", p.Path)
+	debug("setstat name: %s", p.Path)
 	if (p.Flags & ssh_FILEXFER_ATTR_SIZE) != 0 {
 		var size uint64
 		if size, b, err = unmarshalUint64Safe(b); err == nil {
@@ -515,7 +533,7 @@ func (p sshFxpFsetstatPacket) respond(svr *Server) error {
 	b := p.Attrs.([]byte)
 	var err error
 
-	debug("fsetstat name \"%s\"", f.Name())
+	debug("fsetstat name: %s", f.Name())
 	if (p.Flags & ssh_FILEXFER_ATTR_SIZE) != 0 {
 		var size uint64
 		if size, b, err = unmarshalUint64Safe(b); err == nil {

@@ -2,8 +2,11 @@
 
 package sftp
 
-import "log"
+// import "log"
+import "fmt"
 
-func debug(fmt string, args ...interface{}) {
-	log.Printf(fmt, args...)
+func debug(format string, args ...interface{}) {
+	// log.Printf(format, args...)
+	fmt.Printf(format, args...)
+	fmt.Println()
 }

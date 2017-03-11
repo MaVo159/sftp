@@ -34,6 +34,7 @@ type Server struct {
 	openFilesLock sync.RWMutex
 	handleCount   int
 	maxTxPacket   uint32
+	packetSync    packetSync
 }
 
 func (svr *Server) nextHandle(f *os.File) string {
@@ -87,6 +88,7 @@ func NewServer(rwc io.ReadWriteCloser, options ...ServerOption) (*Server, error)
 		openFiles:   make(map[string]*os.File),
 		maxTxPacket: 1 << 15,
 	}
+	s.packetSync = newpSync(&s.serverConn)
 
 	for _, o := range options {
 		if err := o(s); err != nil {
@@ -192,6 +194,13 @@ func (svr *Server) sftpServerWorker() error {
 			readonly = pkt.readonly()
 		case *sshFxpExtendedPacket:
 			readonly = pkt.SpecificPacket.readonly()
+		}
+
+		switch pkt := pkt.(type) {
+		case id:
+			svr.packetSync.incomingPacketId(pkt.id())
+		default:
+			svr.packetSync.incomingPacketId(uint32(0))
 		}
 
 		// If server is operating read-only and a write operation is requested,
@@ -334,7 +343,7 @@ func handlePacket(s *Server, p interface{}) error {
 			Data:   data[:n],
 		})
 	case *sshFxpWritePacket:
-		// debug("write: %s", p.Handle)
+		debug("write: %s %v %v", p.Handle, int(p.ID), len(p.Data))
 		f, ok := s.getHandle(p.Handle)
 		if !ok {
 			return s.sendError(p, syscall.EBADF)
@@ -355,6 +364,7 @@ func handlePacket(s *Server, p interface{}) error {
 func (svr *Server) Serve() error {
 	var wg sync.WaitGroup
 	wg.Add(sftpServerWorkerCount)
+
 	for i := 0; i < sftpServerWorkerCount; i++ {
 		go func() {
 			defer wg.Done()
@@ -370,6 +380,8 @@ func (svr *Server) Serve() error {
 	var pktBytes []byte
 	for {
 		pktType, pktBytes, err = svr.recvPacket()
+		debug("recvPacket: pktType: %v err: %v len: %v",
+			pktType, err, len(pktBytes))
 		if err != nil {
 			break
 		}
@@ -378,6 +390,7 @@ func (svr *Server) Serve() error {
 
 	close(svr.pktChan) // shuts down sftpServerWorkers
 	wg.Wait()          // wait for all workers to exit
+	svr.packetSync.close()
 
 	// close any still-open files
 	for handle, file := range svr.openFiles {
@@ -385,6 +398,22 @@ func (svr *Server) Serve() error {
 		file.Close()
 	}
 	return err // error from recvPacket
+}
+
+func (svr *Server) sendPacket(m encoding.BinaryMarshaler) error {
+	if pkt, ok := m.(responsePacket); ok {
+		debug("sendPacket:  %v", pkt.id())
+		svr.packetSync.readyPacket(pkt)
+	} else {
+		debug("-------------------------> Not a responsePacket: %v", m)
+		svr.serverConn.sendPacket(m)
+	}
+	return nil
+}
+
+func (s *Server) sendError(p id, err error) error {
+	debug("sendError: %v, %v", p.id(), err)
+	return s.sendPacket(statusFromError(p, err))
 }
 
 type id interface {

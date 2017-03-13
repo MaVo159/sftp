@@ -59,6 +59,7 @@ type packetSync struct {
 // register incoming packets to be handled
 // send id of 0 for packets without id
 func (s packetSync) incomingPacketId(id uint32) {
+	debug("incomingPacketId: %v", id)
 	s.ids <- id
 }
 

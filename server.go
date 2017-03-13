@@ -29,7 +29,7 @@ type Server struct {
 	serverConn
 	debugStream   io.Writer
 	readOnly      bool
-	pktChan       chan rxPacket
+	pktChan       chan interface{}
 	openFiles     map[string]*os.File
 	openFilesLock sync.RWMutex
 	handleCount   int
@@ -84,7 +84,7 @@ func NewServer(rwc io.ReadWriteCloser, options ...ServerOption) (*Server, error)
 			},
 		},
 		debugStream: ioutil.Discard,
-		pktChan:     make(chan rxPacket, sftpServerWorkerCount),
+		pktChan:     make(chan interface{}, sftpServerWorkerCount),
 		openFiles:   make(map[string]*os.File),
 		maxTxPacket: 1 << 15,
 	}
@@ -123,94 +123,82 @@ type rxPacket struct {
 	pktBytes []byte
 }
 
+func (svr *Server) tmpPacket(p rxPacket) (interface{}, error) {
+	var pkt interface {
+		encoding.BinaryUnmarshaler
+		id() uint32
+	}
+	// var readonly = true
+	switch p.pktType {
+	case ssh_FXP_INIT:
+		pkt = &sshFxInitPacket{}
+	case ssh_FXP_LSTAT:
+		pkt = &sshFxpLstatPacket{}
+	case ssh_FXP_OPEN:
+		pkt = &sshFxpOpenPacket{}
+		// readonly handled specially below
+	case ssh_FXP_CLOSE:
+		pkt = &sshFxpClosePacket{}
+	case ssh_FXP_READ:
+		pkt = &sshFxpReadPacket{}
+	case ssh_FXP_WRITE:
+		pkt = &sshFxpWritePacket{}
+		// readonly = false
+	case ssh_FXP_FSTAT:
+		pkt = &sshFxpFstatPacket{}
+	case ssh_FXP_SETSTAT:
+		pkt = &sshFxpSetstatPacket{}
+		// readonly = false
+	case ssh_FXP_FSETSTAT:
+		pkt = &sshFxpFsetstatPacket{}
+		// readonly = false
+	case ssh_FXP_OPENDIR:
+		pkt = &sshFxpOpendirPacket{}
+	case ssh_FXP_READDIR:
+		pkt = &sshFxpReaddirPacket{}
+	case ssh_FXP_REMOVE:
+		pkt = &sshFxpRemovePacket{}
+		// readonly = false
+	case ssh_FXP_MKDIR:
+		pkt = &sshFxpMkdirPacket{}
+		// readonly = false
+	case ssh_FXP_RMDIR:
+		pkt = &sshFxpRmdirPacket{}
+		// readonly = false
+	case ssh_FXP_REALPATH:
+		pkt = &sshFxpRealpathPacket{}
+	case ssh_FXP_STAT:
+		pkt = &sshFxpStatPacket{}
+	case ssh_FXP_RENAME:
+		pkt = &sshFxpRenamePacket{}
+		// readonly = false
+	case ssh_FXP_READLINK:
+		pkt = &sshFxpReadlinkPacket{}
+	case ssh_FXP_SYMLINK:
+		pkt = &sshFxpSymlinkPacket{}
+		// readonly = false
+	case ssh_FXP_EXTENDED:
+		pkt = &sshFxpExtendedPacket{}
+	default:
+		return nil, errors.Errorf("unhandled packet type: %s", p.pktType)
+	}
+	if err := pkt.UnmarshalBinary(p.pktBytes); err != nil {
+		return nil, err
+	}
+
+	debug("pkt: %v", pkt)
+	switch pkt := pkt.(type) {
+	case id:
+		svr.packetSync.incomingPacketId(pkt.id())
+	default:
+		svr.packetSync.incomingPacketId(uint32(0))
+	}
+	return pkt, nil
+}
+
 // Up to N parallel servers
 func (svr *Server) sftpServerWorker() error {
-	for p := range svr.pktChan {
-		var pkt interface {
-			encoding.BinaryUnmarshaler
-			id() uint32
-		}
-		var readonly = true
-		switch p.pktType {
-		case ssh_FXP_INIT:
-			pkt = &sshFxInitPacket{}
-		case ssh_FXP_LSTAT:
-			pkt = &sshFxpLstatPacket{}
-		case ssh_FXP_OPEN:
-			pkt = &sshFxpOpenPacket{}
-			// readonly handled specially below
-		case ssh_FXP_CLOSE:
-			pkt = &sshFxpClosePacket{}
-		case ssh_FXP_READ:
-			pkt = &sshFxpReadPacket{}
-		case ssh_FXP_WRITE:
-			pkt = &sshFxpWritePacket{}
-			readonly = false
-		case ssh_FXP_FSTAT:
-			pkt = &sshFxpFstatPacket{}
-		case ssh_FXP_SETSTAT:
-			pkt = &sshFxpSetstatPacket{}
-			readonly = false
-		case ssh_FXP_FSETSTAT:
-			pkt = &sshFxpFsetstatPacket{}
-			readonly = false
-		case ssh_FXP_OPENDIR:
-			pkt = &sshFxpOpendirPacket{}
-		case ssh_FXP_READDIR:
-			pkt = &sshFxpReaddirPacket{}
-		case ssh_FXP_REMOVE:
-			pkt = &sshFxpRemovePacket{}
-			readonly = false
-		case ssh_FXP_MKDIR:
-			pkt = &sshFxpMkdirPacket{}
-			readonly = false
-		case ssh_FXP_RMDIR:
-			pkt = &sshFxpRmdirPacket{}
-			readonly = false
-		case ssh_FXP_REALPATH:
-			pkt = &sshFxpRealpathPacket{}
-		case ssh_FXP_STAT:
-			pkt = &sshFxpStatPacket{}
-		case ssh_FXP_RENAME:
-			pkt = &sshFxpRenamePacket{}
-			readonly = false
-		case ssh_FXP_READLINK:
-			pkt = &sshFxpReadlinkPacket{}
-		case ssh_FXP_SYMLINK:
-			pkt = &sshFxpSymlinkPacket{}
-			readonly = false
-		case ssh_FXP_EXTENDED:
-			pkt = &sshFxpExtendedPacket{}
-		default:
-			return errors.Errorf("unhandled packet type: %s", p.pktType)
-		}
-		if err := pkt.UnmarshalBinary(p.pktBytes); err != nil {
-			return err
-		}
-
-		// handle FXP_OPENDIR specially
-		switch pkt := pkt.(type) {
-		case *sshFxpOpenPacket:
-			readonly = pkt.readonly()
-		case *sshFxpExtendedPacket:
-			readonly = pkt.SpecificPacket.readonly()
-		}
-
-		switch pkt := pkt.(type) {
-		case id:
-			svr.packetSync.incomingPacketId(pkt.id())
-		default:
-			svr.packetSync.incomingPacketId(uint32(0))
-		}
-
-		// If server is operating read-only and a write operation is requested,
-		// return permission denied
-		if !readonly && svr.readOnly {
-			if err := svr.sendError(pkt, syscall.EPERM); err != nil {
-				return errors.Wrap(err, "failed to send read only packet response")
-			}
-			continue
-		}
+	for pkt := range svr.pktChan {
 
 		if err := handlePacket(svr, pkt); err != nil {
 			debug("handlePacket err: %s", err)
@@ -376,6 +364,7 @@ func (svr *Server) Serve() error {
 	}
 
 	var err error
+	var pkt interface{}
 	var pktType uint8
 	var pktBytes []byte
 	for {
@@ -383,14 +372,24 @@ func (svr *Server) Serve() error {
 		debug("recvPacket: pktType: %v err: %v len: %v",
 			pktType, err, len(pktBytes))
 		if err != nil {
+			debug("recvPacket err:", err)
 			break
 		}
-		svr.pktChan <- rxPacket{fxp(pktType), pktBytes}
+		pkt, err = svr.tmpPacket(rxPacket{fxp(pktType), pktBytes})
+		if err != nil {
+			debug("tmpPacket err:", err)
+			break
+		}
+		svr.pktChan <- pkt
 	}
 
+	debug("1")
 	close(svr.pktChan) // shuts down sftpServerWorkers
-	wg.Wait()          // wait for all workers to exit
+	debug("2")
+	wg.Wait() // wait for all workers to exit
+	debug("3")
 	svr.packetSync.close()
+	debug("4")
 
 	// close any still-open files
 	for handle, file := range svr.openFiles {

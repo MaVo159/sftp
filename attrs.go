@@ -5,8 +5,21 @@ package sftp
 
 import (
 	"os"
-	"syscall"
 	"time"
+)
+
+const (
+	syscall_S_IFMT   = 0xf000
+	syscall_S_IFBLK  = 0x6000
+	syscall_S_IFCHR  = 0x2000
+	syscall_S_IFDIR  = 0x4000
+	syscall_S_IFIFO  = 0x1000
+	syscall_S_IFLNK  = 0xa000
+	syscall_S_IFREG  = 0x8000
+	syscall_S_IFSOCK = 0xc000
+	syscall_S_ISGID  = 0x400
+	syscall_S_ISUID  = 0x800
+	syscall_S_ISVTX  = 0x200
 )
 
 const (
@@ -167,29 +180,29 @@ func marshalFileInfo(b []byte, fi os.FileInfo) []byte {
 // toFileMode converts sftp filemode bits to the os.FileMode specification
 func toFileMode(mode uint32) os.FileMode {
 	var fm = os.FileMode(mode & 0777)
-	switch mode & syscall.S_IFMT {
-	case syscall.S_IFBLK:
+	switch mode & syscall_S_IFMT {
+	case syscall_S_IFBLK:
 		fm |= os.ModeDevice
-	case syscall.S_IFCHR:
+	case syscall_S_IFCHR:
 		fm |= os.ModeDevice | os.ModeCharDevice
-	case syscall.S_IFDIR:
+	case syscall_S_IFDIR:
 		fm |= os.ModeDir
-	case syscall.S_IFIFO:
+	case syscall_S_IFIFO:
 		fm |= os.ModeNamedPipe
-	case syscall.S_IFLNK:
+	case syscall_S_IFLNK:
 		fm |= os.ModeSymlink
-	case syscall.S_IFREG:
+	case syscall_S_IFREG:
 		// nothing to do
-	case syscall.S_IFSOCK:
+	case syscall_S_IFSOCK:
 		fm |= os.ModeSocket
 	}
-	if mode&syscall.S_ISGID != 0 {
+	if mode&syscall_S_ISGID != 0 {
 		fm |= os.ModeSetgid
 	}
-	if mode&syscall.S_ISUID != 0 {
+	if mode&syscall_S_ISUID != 0 {
 		fm |= os.ModeSetuid
 	}
-	if mode&syscall.S_ISVTX != 0 {
+	if mode&syscall_S_ISVTX != 0 {
 		fm |= os.ModeSticky
 	}
 	return fm
@@ -201,35 +214,35 @@ func fromFileMode(mode os.FileMode) uint32 {
 
 	if mode&os.ModeDevice != 0 {
 		if mode&os.ModeCharDevice != 0 {
-			ret |= syscall.S_IFCHR
+			ret |= syscall_S_IFCHR
 		} else {
-			ret |= syscall.S_IFBLK
+			ret |= syscall_S_IFBLK
 		}
 	}
 	if mode&os.ModeDir != 0 {
-		ret |= syscall.S_IFDIR
+		ret |= syscall_S_IFDIR
 	}
 	if mode&os.ModeSymlink != 0 {
-		ret |= syscall.S_IFLNK
+		ret |= syscall_S_IFLNK
 	}
 	if mode&os.ModeNamedPipe != 0 {
-		ret |= syscall.S_IFIFO
+		ret |= syscall_S_IFIFO
 	}
 	if mode&os.ModeSetgid != 0 {
-		ret |= syscall.S_ISGID
+		ret |= syscall_S_ISGID
 	}
 	if mode&os.ModeSetuid != 0 {
-		ret |= syscall.S_ISUID
+		ret |= syscall_S_ISUID
 	}
 	if mode&os.ModeSticky != 0 {
-		ret |= syscall.S_ISVTX
+		ret |= syscall_S_ISVTX
 	}
 	if mode&os.ModeSocket != 0 {
-		ret |= syscall.S_IFSOCK
+		ret |= syscall_S_IFSOCK
 	}
 
 	if mode&os.ModeType == 0 {
-		ret |= syscall.S_IFREG
+		ret |= syscall_S_IFREG
 	}
 	ret |= uint32(mode & os.ModePerm)
 
